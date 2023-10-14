@@ -53,7 +53,7 @@ class Memory:
         self,
         texts,
         metadata: Union[List, List[dict], None] = None,
-        memory_file: str = None,
+        memory_file: Union[str, None] = None,
         embed_at_search: bool = False,
     ):
         """
@@ -62,6 +62,23 @@ class Memory:
         :param texts: a string or a list of strings containing the texts to be saved.
         :param metadata: a dictionary or a list of dictionaries containing the metadata associated with the texts.
         :param memory_file: a string containing the path to the memory file. (default: None)
+        """
+        self.append(texts, metadata)
+        if memory_file is None:
+            memory_file = self.memory_file
+        if memory_file is not None:
+            Storage(memory_file).save_to_disk(self.memory)
+
+    def append(
+        self,
+        texts: Union[str, List[str]],
+        metadata: Union[List, List[dict], None] = None,
+    ):
+        """
+        Appends the given texts and metadata to memory without saving to disk.
+
+        :param texts: a string or a list of strings containing the texts to be saved.
+        :param metadata: a dictionary or a list of dictionaries containing the metadata associated with the texts.
         """
         if not isinstance(texts, list):
             texts = [texts]
@@ -73,9 +90,6 @@ class Memory:
 
         # Extend metadata to be the same length as texts, if it's shorter.
         metadata += [{}] * (len(texts) - len(metadata))
-
-        if memory_file is None:
-            memory_file = self.memory_file
 
         text_chunks = [self.chunker(text) for text in texts]
         chunks_size = [len(chunks) for chunks in text_chunks]
@@ -101,8 +115,9 @@ class Memory:
                 }
                 self.memory.append(entry)
 
-        if memory_file is not None:
-            Storage(memory_file).save_to_disk(self.memory)
+    def save_to_disk(self):
+        assert self.memory_file
+        Storage(memory_file).save_to_disk(self.memory)
 
     def search(self, query: str, top_n: int = 5) -> List[Dict[str, Any]]:
         """
