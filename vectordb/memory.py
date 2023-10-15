@@ -4,12 +4,12 @@ for text and associated metadata, with functionality for saving, searching, and
 managing memory entries.
 """
 
-from typing import List, Dict, Any, Union
+from typing import List, Dict, Any
 from .chunking import Chunker
-from .embedding import BaseEmbedder, Embedder
+from .embedding import Embedder
 from .vector_search import VectorSearch
 from .storage import Storage
-import itertools
+import time
 import tensorflow as tf
 
 
@@ -23,7 +23,7 @@ class Memory:
         self,
         memory_file: str = None,
         chunking_strategy: dict = None,
-        embeddings: Union[BaseEmbedder, str] = "normal",
+        embeddings: str = "normal",
     ):
         """
         Initializes the Memory class.
@@ -39,22 +39,13 @@ class Memory:
         if chunking_strategy is None:
             chunking_strategy = {"mode": "sliding_window"}
         self.chunker = Chunker(chunking_strategy)
+        self.embedder = Embedder(embeddings)
+        self.vector_search = VectorSearch([entry["embedding"] for entry in self.memory])
 
-        if isinstance(embeddings, str):
-            self.embedder = Embedder(embeddings)
-        elif isinstance(embeddings, BaseEmbedder):
-            self.embedder = embeddings
-        else:
-            raise TypeError("Embeddings must be an Embedder instance or string")
-
-        self.vector_search = VectorSearch()
-
-    def save(
+    def append(
         self,
         texts,
-        metadata: Union[List, List[dict], None] = None,
-        memory_file: Union[str, None] = None,
-        embed_at_search: bool = False,
+        metadata: list = [],
     ):
         """
         Saves the given texts and metadata to memory.
@@ -63,61 +54,29 @@ class Memory:
         :param metadata: a dictionary or a list of dictionaries containing the metadata associated with the texts.
         :param memory_file: a string containing the path to the memory file. (default: None)
         """
-        self.append(texts, metadata)
-        if memory_file is None:
-            memory_file = self.memory_file
-        if memory_file is not None:
-            Storage(memory_file).save_to_disk(self.memory)
-
-    def append(
-        self,
-        texts: Union[str, List[str]],
-        metadata: Union[List, List[dict], None] = None,
-    ):
-        """
-        Appends the given texts and metadata to memory without saving to disk.
-
-        :param texts: a string or a list of strings containing the texts to be saved.
-        :param metadata: a dictionary or a list of dictionaries containing the metadata associated with the texts.
-        """
         if not isinstance(texts, list):
             texts = [texts]
-
-        if metadata is None:
-            metadata = []
-        elif not isinstance(metadata, list):
+        if not isinstance(metadata, list):
             metadata = [metadata]
 
         # Extend metadata to be the same length as texts, if it's shorter.
         metadata += [{}] * (len(texts) - len(metadata))
 
-        text_chunks = [self.chunker(text) for text in texts]
-        chunks_size = [len(chunks) for chunks in text_chunks]
-
-        flatten_chunks = list(itertools.chain.from_iterable(text_chunks))
-        embeddings = self.embedder.embed_text(flatten_chunks)
-
-        # accumulated size is end_index of each chunk
-        for size, end_index, chunks, meta in zip(
-            chunks_size,
-            itertools.accumulate(chunks_size),
-            text_chunks,
-            metadata
-        ):
-            start_index = end_index - size
-            chunks_embedding = embeddings[start_index: end_index]
-
-            for chunk, embedding in zip(chunks, chunks_embedding):
+        for text, meta in zip(texts, metadata):
+            chunks = self.chunker.strategy(text)
+            embeddings = self.embedder.embed_text(chunks)
+            for chunk, embedding in zip(chunks, embeddings):
                 entry = {
                     "chunk": chunk,
-                    "embedding": embedding,
+                    "embedding": embedding.numpy().tolist()
+                    if isinstance(embedding, tf.Tensor)
+                    else embedding.tolist(),
                     "metadata": meta,
                 }
                 self.memory.append(entry)
 
     def save_to_disk(self):
-        assert self.memory_file
-        Storage(memory_file).save_to_disk(self.memory)
+        Storage(self.memory_file).save_to_disk(self.memory)
 
     def search(self, query: str, top_n: int = 5) -> List[Dict[str, Any]]:
         """
@@ -128,8 +87,7 @@ class Memory:
         :return: a list of dictionaries containing the top_n most similar chunks and their associated metadata.
         """
         query_embedding = self.embedder.embed_text([query])[0]
-        embeddings = [entry["embedding"] for entry in self.memory]
-        indices = self.vector_search.search_vectors(query_embedding, embeddings, top_n)
+        indices = self.vector_search.search_vectors(query_embedding, top_n)
         results = [
             {"chunk": self.memory[i]["chunk"], "metadata": self.memory[i]["metadata"]}
             for i in indices
@@ -140,9 +98,9 @@ class Memory:
         """
         Clears the memory.
         """
+        self.memory = []
         if self.memory_file is not None:
             Storage(self.memory_file).save_to_disk(self.memory)
-        self.memory = []
 
     def dump(self):
         """
